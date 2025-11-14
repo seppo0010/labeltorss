@@ -63,7 +63,7 @@ def process_mailbox(M):
     fg.description('My Newsletters')
     fg.link(href=f'{BASE_URL}/rss.xml')
 
-    for mail in mails:
+    for mail in mails[::-1]:
         fe = fg.add_entry()
         id_ = re.sub('[^0-9a-zA-Z]+', '_', mail[1])
         fe.id(id_)
