@@ -50,9 +50,9 @@ def process_mailbox(M):
                 ctype = part.get_content_type()
 
                 if current_ctype is None or ctype == 'text/html':
-                    body = (part.get_payload(decode=True) or b'').decode('utf-8', errors='ignore')
+                    body = (part.get_payload(decode=True) or b'').decode('utf-8', errors='backslashreplace')
         else:
-            body = (msg.get_payload(decode=True) or b'').decode('utf-8', errors='ignore')
+            body = (msg.get_payload(decode=True) or b'').decode('utf-8', errors='backslashreplace')
 
         mails.append((parse(msg['Date']), subject, body))
         if i == 20: break
