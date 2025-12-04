@@ -8,6 +8,7 @@ import imaplib
 import email
 import datetime
 import re
+from unidecode import unidecode
 import unicodedata
 
 from dateutil.parser import parse
@@ -35,7 +36,7 @@ def process_mailbox(M):
         return
 
     mails = []
-    for i, num in enumerate(data[0].split()[::-1]):
+    for num in data[0].split():
         rv, data = M.fetch(num, '(RFC822)')
         if rv != 'OK':
             print("ERROR getting message", num)
@@ -55,8 +56,8 @@ def process_mailbox(M):
             body = (msg.get_payload(decode=True) or b'').decode('utf-8', errors='backslashreplace')
 
         mails.append((parse(msg['Date']), subject, body))
-        if i == 20: break
 
+    mails = sorted(mails, key=lambda x: x[0], reverse=True)
     fg = FeedGenerator()
     fg.id(f'{BASE_URL}/rss.xml')
     fg.title('My Newsletters')
@@ -65,7 +66,7 @@ def process_mailbox(M):
 
     for mail in mails[::-1]:
         fe = fg.add_entry()
-        id_ = re.sub('[^0-9a-zA-Z]+', '_', mail[1])
+        id_ = re.sub('[^0-9a-zA-Z]+', '_', unidecode(mail[1]))
         fe.id(id_)
         fe.updated(mail[0])
         fe.title(id_)
