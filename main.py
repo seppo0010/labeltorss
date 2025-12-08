@@ -53,8 +53,7 @@ def save_state(last_uid, entries):
 
 def generate_feed(entries):
     """Regenerates the RSS file from the list of entries."""
-    # Strict Sort: Date Descending (Newest First)
-    # reverse=True ensures the latest dates are at index 0
+    # 1. Sort the list: Newest -> Oldest
     sorted_entries = sorted(entries, key=lambda x: parse(x['date']), reverse=True)
 
     fg = FeedGenerator()
@@ -63,9 +62,9 @@ def generate_feed(entries):
     fg.description('Personal Newsletter Feed')
     fg.link(href=f'{BASE_URL}/rss.xml')
 
-    # Add entries in order (Newest -> Oldest)
+    # 2. Append entries in that exact order (prevents default prepending behavior)
     for entry in sorted_entries:
-        fe = fg.add_entry()
+        fe = fg.add_entry(order='append')
         fe.id(entry['link'])
         fe.title(entry['title'])
         fe.updated(parse(entry['date']))
