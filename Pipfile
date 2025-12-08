@@ -7,6 +7,8 @@ name = "pypi"
 setuptools = "*"
 feedgen = "*"
 unidecode = "*"
+requests = "*"
+beautifulsoup4 = "*"
 
 [dev-packages]
 
