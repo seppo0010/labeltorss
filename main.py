@@ -48,6 +48,7 @@ def load_state():
 
 def save_state(last_uid, entries):
     """Saves the high-water mark UID and the entry history."""
+    entries = sorted(entries, key=lambda x: parse(x['date']), reverse=True)[:20]
     with open(STATE_FILE, 'w') as f:
         json.dump({'last_uid': last_uid, 'entries': entries}, f, indent=4)
 
@@ -130,22 +131,25 @@ def fetch_emails():
     last_uid, existing_entries = load_state()
     print(f"Checking for new emails (Last UID: {last_uid})...")
 
-    if last_uid > 0:
-        search_crit = f'{last_uid + 1}:*'
-        rv, data = M.uid('search', None, search_crit)
-    else:
-        rv, data = M.uid('search', None, "ALL")
+    rv, data = M.uid('search', None, "ALL")
+    all_uids = data[0].split()
+    current_uids = set(int(u) for u in all_uids)
 
-    uids = data[0].split()
-    
+    # Remove entries for emails that no longer have the label
+    before = len(existing_entries)
+    existing_entries = [e for e in existing_entries if 'uid' not in e or e['uid'] in current_uids]
+    removed = before - len(existing_entries)
+    if removed:
+        print(f"Removed {removed} entries no longer in folder.")
+
+    new_uids = sorted(uid for uid in current_uids if uid > last_uid)
+
     new_entries = []
     current_max_uid = last_uid
 
-    if uids:
-        for uid_bytes in uids:
-            uid = int(uid_bytes)
-            if uid <= last_uid: continue
-            
+    if new_uids:
+        for uid in new_uids:
+            uid_bytes = str(uid).encode()
             current_max_uid = max(current_max_uid, uid)
             
             rv, data = M.uid('fetch', uid_bytes, '(RFC822)')
@@ -170,6 +174,7 @@ def fetch_emails():
 
             date_obj = parse(msg['Date'])
             new_entries.append({
+                'uid': uid,
                 'date': date_obj.isoformat(),
                 'title': id_,
                 'link': f'{BASE_URL}/{file_name}',
@@ -180,10 +185,12 @@ def fetch_emails():
     else:
         print("No new emails.")
 
+
     M.close()
     M.logout()
 
     all_entries = existing_entries + new_entries
+    print([e['title'] for e in all_entries])
     save_state(current_max_uid, all_entries)
     generate_feed(all_entries)
 
