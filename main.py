@@ -3,6 +3,7 @@ import os
 import sys
 import imaplib
 import email
+import email.utils
 import re
 import json
 import argparse
@@ -72,6 +73,8 @@ def generate_feed(entries):
         fe.link(href=entry['link'], rel='self')
         fe.description(entry.get('description', ''))
         fe.summary(entry.get('description', ''), type='html')
+        if entry.get('author'):
+            fe.author(name=entry['author'], email=entry['author'])
 
     fg.atom_file(os.path.join(OUT_PATH, 'rss.xml'))
     print(f"RSS Feed generated with {len(sorted_entries)} items (Newest first).")
@@ -104,7 +107,8 @@ def add_manual_link(url):
         'date': datetime.datetime.now(datetime.timezone.utc).isoformat(),
         'title': title,
         'link': url,
-        'description': f"External Link: {title}"
+        'description': f"External Link: {title}",
+        'author': 'manual@link'
     }
     
     entries.append(new_entry)
@@ -158,6 +162,10 @@ def fetch_emails():
             msg = email.message_from_bytes(data[0][1])
             subject = str(email.header.make_header(email.header.decode_header(msg['Subject'])))
             
+            # Extract sender email
+            from_header = msg.get('From')
+            name, sender_email = email.utils.parseaddr(from_header)
+
             body, current_ctype = "", None
             if msg.is_multipart():
                 for part in msg.walk():
@@ -178,7 +186,8 @@ def fetch_emails():
                 'date': date_obj.isoformat(),
                 'title': id_,
                 'link': f'{BASE_URL}/{file_name}',
-                'description': remove_control_characters(body.strip())
+                'description': remove_control_characters(body.strip()),
+                'author': sender_email
             })
         
         print(f"Processed {len(new_entries)} new emails.")
