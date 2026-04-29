@@ -101,7 +101,8 @@ def add_task(title, project_id, tag_ids=None):
         payload = {
             'title': title,
             'projectId': project_id,
-            'plannedAt': int(time.time() * 1000),
+            'dueWithTime': int((time.time() + 60) * 1000),
+            'dueDay': None,
         }
         if tag_ids:
             payload['tagIds'] = tag_ids
