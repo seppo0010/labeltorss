@@ -36,6 +36,11 @@ except FileExistsError:
 def remove_control_characters(s):
     return "".join(ch for ch in str(s) if unicodedata.category(ch)[0]!="C")
 
+def clean_author_name(name):
+    if name and '|' in name:
+        name = name[:name.index('|')].strip()
+    return name
+
 def load_state():
     """Loads the last seen UID and previous entries."""
     if os.path.exists(STATE_FILE):
@@ -189,7 +194,7 @@ def fetch_emails():
                 'link': f'{BASE_URL}/{file_name}',
                 'description': remove_control_characters(body.strip()),
                 'author': sender_email,
-                'author_name': name,
+                'author_name': clean_author_name(name),
             })
         
         print(f"Processed {len(new_entries)} new emails.")
@@ -205,15 +210,60 @@ def fetch_emails():
     save_state(current_max_uid, all_entries)
     generate_feed(all_entries)
 
+def migrate_entries():
+    """Backfills author_name and subject for existing entries that lack them."""
+    last_uid, entries = load_state()
+
+    needs_update = [e for e in entries if 'uid' in e and ('author_name' not in e or 'subject' not in e)]
+    if not needs_update:
+        print("All entries already have author_name and subject.")
+        return
+
+    M = imaplib.IMAP4_SSL(IMAP_HOST)
+    try:
+        M.login(EMAIL_ACCOUNT, IMAP_PASSWORD)
+    except imaplib.IMAP4.error:
+        print("LOGIN FAILED!!!")
+        sys.exit(1)
+
+    M.select(EMAIL_FOLDER)
+
+    for entry in needs_update:
+        uid = entry['uid']
+        rv, data = M.uid('fetch', str(uid).encode(), '(RFC822.HEADER)')
+        if rv != 'OK':
+            print(f"Could not fetch UID {uid}")
+            continue
+
+        msg = email.message_from_bytes(data[0][1])
+        subject = str(email.header.make_header(email.header.decode_header(msg['Subject'])))
+        from_header = msg.get('From')
+        name, _ = email.utils.parseaddr(from_header)
+
+        entry['subject'] = subject
+        entry['author_name'] = clean_author_name(name)
+        print(f"Updated UID {uid}: author_name={name!r}, subject={subject!r}")
+
+    M.close()
+    M.logout()
+
+    save_state(last_uid, entries)
+    generate_feed(entries)
+    print("Migration complete.")
+
+
 # --- Entry Point ---
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Email to RSS with Manual Link Support")
     parser.add_argument('--add', metavar='URL', help='Add a manual link to the RSS feed')
-    
+    parser.add_argument('--migrate', action='store_true', help='Backfill author_name and subject for existing entries')
+
     args = parser.parse_args()
 
     if args.add:
         add_manual_link(args.add)
+    elif args.migrate:
+        migrate_entries()
     else:
         fetch_emails()
