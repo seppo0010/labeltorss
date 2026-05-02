@@ -68,13 +68,13 @@ def generate_feed(entries):
     for entry in sorted_entries:
         fe = fg.add_entry(order='append')
         fe.id(entry['link'])
-        fe.title(entry['title'])
+        fe.title(entry.get('subject', entry['title']))
         fe.updated(parse(entry['date']))
         fe.link(href=entry['link'], rel='self')
         fe.description(entry.get('description', ''))
         fe.summary(entry.get('description', ''), type='html')
         if entry.get('author'):
-            fe.author(name=entry['author'], email=entry['author'])
+            fe.author(name=entry.get('author_name') or entry['author'], email=entry['author'])
 
     fg.atom_file(os.path.join(OUT_PATH, 'rss.xml'))
     print(f"RSS Feed generated with {len(sorted_entries)} items (Newest first).")
@@ -185,9 +185,11 @@ def fetch_emails():
                 'uid': uid,
                 'date': date_obj.isoformat(),
                 'title': id_,
+                'subject': subject,
                 'link': f'{BASE_URL}/{file_name}',
                 'description': remove_control_characters(body.strip()),
-                'author': sender_email
+                'author': sender_email,
+                'author_name': name,
             })
         
         print(f"Processed {len(new_entries)} new emails.")

@@ -2,6 +2,7 @@ import requests
 import xml.etree.ElementTree as ET
 import sys
 import time
+from dateutil.parser import parse as parse_date
 
 # Configuration
 RSS_URL = 'http://localhost:5002/labeltorss/rss.xml'
@@ -159,16 +160,30 @@ def main():
     for item in items:
         if is_atom:
             title_elem = item.find('{http://www.w3.org/2005/Atom}title')
-            author_elem = item.find('{http://www.w3.org/2005/Atom}author/{http://www.w3.org/2005/Atom}email')
-            if author_elem is None:
-                author_elem = item.find('{http://www.w3.org/2005/Atom}author/{http://www.w3.org/2005/Atom}name')
+            author_name_elem = item.find('{http://www.w3.org/2005/Atom}author/{http://www.w3.org/2005/Atom}name')
+            author_email_elem = item.find('{http://www.w3.org/2005/Atom}author/{http://www.w3.org/2005/Atom}email')
+            date_elem = item.find('{http://www.w3.org/2005/Atom}updated')
         else:
             title_elem = item.find('title')
-            author_elem = item.find('author')
-        
+            author_name_elem = None
+            author_email_elem = item.find('author')
+            date_elem = item.find('pubDate')
+
         title = title_elem.text if title_elem is not None else None
-        author_email = author_elem.text if author_elem is not None else None
-        
+        author_email = author_email_elem.text if author_email_elem is not None else None
+        author_name = author_name_elem.text if author_name_elem is not None else None
+
+        # If author_name looks like an email (old entries), discard it
+        if author_name and '@' in author_name:
+            author_name = None
+
+        pub_date = None
+        if date_elem is not None and date_elem.text:
+            try:
+                pub_date = parse_date(date_elem.text).strftime('%Y-%m-%d')
+            except Exception:
+                pass
+
         if title:
             tag_ids = []
             tag_name = get_tag_name(author_email)
@@ -176,8 +191,17 @@ def main():
                 tag_id = get_tag_id(tag_name)
                 if tag_id:
                     tag_ids.append(tag_id)
-            
-            add_task(title, project_id, tag_ids)
+
+            display_author = author_name or tag_name
+            parts = []
+            if display_author:
+                parts.append(display_author)
+            parts.append(title)
+            task_title = ' - '.join(parts)
+            if pub_date:
+                task_title += f' ({pub_date})'
+
+            add_task(task_title, project_id, tag_ids)
 
 if __name__ == "__main__":
     main()
