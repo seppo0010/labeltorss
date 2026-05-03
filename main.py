@@ -37,7 +37,10 @@ def remove_control_characters(s):
     return "".join(ch for ch in str(s) if unicodedata.category(ch)[0]!="C")
 
 def clean_author_name(name):
-    if name and '|' in name:
+    if not name:
+        return name
+    name = str(email.header.make_header(email.header.decode_header(name)))
+    if '|' in name:
         name = name[:name.index('|')].strip()
     return name
 
@@ -214,7 +217,10 @@ def migrate_entries():
     """Backfills author_name and subject for existing entries that lack them."""
     last_uid, entries = load_state()
 
-    needs_update = [e for e in entries if 'uid' in e and ('author_name' not in e or 'subject' not in e)]
+    needs_update = [e for e in entries if 'uid' in e and (
+        'author_name' not in e or 'subject' not in e or
+        (e.get('author_name') and '=?' in e['author_name'])
+    )]
     if not needs_update:
         print("All entries already have author_name and subject.")
         return
