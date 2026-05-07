@@ -1,3 +1,4 @@
+import re
 import requests
 import xml.etree.ElementTree as ET
 import sys
@@ -18,6 +19,13 @@ SENDER_TAG_MAP = {
     'pricetheory@substack.com': 'Hendrickson',
     'aisnakeoil@substack.com': 'Kapoor and Narayanan'
 }
+
+def sanitize_title(title):
+    # SP treats #word as an inline tag and strips it from the stored title.
+    # Remove the '#' prefix from any #word pattern so the title we send matches what SP stores.
+    title = re.sub(r'#(\S+)', r'\1', title)
+    title = re.sub(r'  +', ' ', title).strip()
+    return title
 
 def get_tag_name(email):
     """Determines the tag name based on the sender email."""
@@ -88,7 +96,7 @@ def task_exists(title, project_id):
         data = response.json()
         if data.get('ok') and data.get('data'):
             for task in data['data']:
-                if task['title'] == title:
+                if sanitize_title(task['title']) == sanitize_title(title):
                     return True
         return False
     except Exception as e:
@@ -204,7 +212,7 @@ def main():
             if pub_date:
                 task_title += f' ({pub_date})'
 
-            add_task(task_title, project_id, tag_ids)
+            add_task(sanitize_title(task_title), project_id, tag_ids)
 
 if __name__ == "__main__":
     main()
