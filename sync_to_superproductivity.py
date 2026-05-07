@@ -75,12 +75,15 @@ def get_tag_id(tag_name):
 def task_exists(title, project_id):
     """Checks if a task with the given title already exists in the project (including archived)."""
     try:
-        response = requests.get(f'{SUPER_PRODUCTIVITY_API_URL}/tasks', params={
-            'query': title,
-            'projectId': project_id,
-            'source': 'all',
-            'includeDone': 'true'
-        })
+        # Use a short alphabetic-only filter to avoid URL encoding issues with emoji/special
+        # chars in the full title; exact match on returned results catches the real duplicate.
+        alpha_words = [w for w in title.split() if w.isalpha() and w.isascii() and len(w) > 4]
+        short_query = max(alpha_words, key=len) if alpha_words else None
+
+        params = {'projectId': project_id, 'source': 'all', 'includeDone': 'true'}
+        if short_query:
+            params['query'] = short_query
+        response = requests.get(f'{SUPER_PRODUCTIVITY_API_URL}/tasks', params=params)
         response.raise_for_status()
         data = response.json()
         if data.get('ok') and data.get('data'):
