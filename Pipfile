@@ -9,6 +9,7 @@ feedgen = "*"
 unidecode = "*"
 requests = "*"
 beautifulsoup4 = "*"
+imapclient = "*"
 
 [dev-packages]
 

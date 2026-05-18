@@ -1,21 +1,20 @@
 #!/usr/bin/env python
 import os
 import sys
-import imaplib
 import email
 import email.utils
 import re
 import json
 import argparse
 import datetime
+import time
 from unidecode import unidecode
 import unicodedata
 from dateutil.parser import parse
 from feedgen.feed import FeedGenerator
-
-# New imports for fetching web titles
 import requests
 from bs4 import BeautifulSoup
+from imapclient import IMAPClient as _IMAPClient
 
 # --- Configuration ---
 IMAP_HOST = 'imap.gmail.com'
@@ -25,6 +24,79 @@ EMAIL_FOLDER = os.getenv('EMAIL_FOLDER')
 OUT_PATH = os.getenv('OUT_PATH')
 BASE_URL = os.getenv('BASE_URL')
 STATE_FILE = os.path.join(OUT_PATH, 'metadata.json')
+
+SUPER_PRODUCTIVITY_API_URL = 'http://127.0.0.1:3876'
+SP_PROJECT_NAME = 'Newsletters'
+
+SENDER_TAG_MAP = {
+    'someunpleasant@substack.com': 'Mindel',
+    'hola@a1000.ar': 'A1000',
+    'noteconomics@substack.com': 'Ajzenman',
+    'pricetheory@substack.com': 'Hendrickson',
+    'aisnakeoil@substack.com': 'Kapoor and Narayanan',
+}
+
+SENDER_TAG_REGEX_MAP = [
+    (r'causalinf(\+[^@]+)?@substack\.com', 'Cunningham'),
+    (r'.+@cenital\.com', 'Cenital'),
+]
+
+# --- IMAP Connection ---
+
+class IMAPClient:
+    def __init__(self):
+        self._conn = None
+
+    def ensure_connected(self):
+        if self._conn is not None:
+            try:
+                self._conn.noop()
+                return self._conn
+            except Exception:
+                print("IMAP connection lost, reconnecting...")
+                self._conn = None
+        return self._connect()
+
+    def _connect(self):
+        conn = _IMAPClient(IMAP_HOST, ssl=True)
+        try:
+            conn.login(EMAIL_ACCOUNT, IMAP_PASSWORD)
+        except Exception:
+            print("LOGIN FAILED!!!")
+            sys.exit(1)
+        conn.select_folder(EMAIL_FOLDER)
+        self._conn = conn
+        return conn
+
+    def idle_until_change(self, timeout=25 * 60):
+        """Block in IDLE until EXISTS/RECENT or timeout. Returns True if new mail signaled."""
+        conn = self.ensure_connected()
+        try:
+            conn.idle()
+            responses = conn.idle_check(timeout=timeout)
+            conn.idle_done()
+            return any(
+                isinstance(r, tuple) and len(r) > 1 and r[1] in (b'EXISTS', b'RECENT')
+                for r in responses
+            )
+        except Exception as e:
+            print(f"IDLE interrupted: {e}")
+            self._conn = None
+            return True  # trigger a fetch on next iteration
+
+    def close(self):
+        if self._conn is not None:
+            try:
+                self._conn.logout()
+            except Exception:
+                pass
+            self._conn = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
 
 try:
     os.makedirs(OUT_PATH)
@@ -63,7 +135,6 @@ def save_state(last_uid, entries):
 
 def generate_feed(entries):
     """Regenerates the RSS file from the list of entries."""
-    # 1. Sort the list: Newest -> Oldest
     sorted_entries = sorted(entries, key=lambda x: parse(x['date']), reverse=True)
 
     fg = FeedGenerator()
@@ -72,7 +143,7 @@ def generate_feed(entries):
     fg.description('Personal Newsletter Feed')
     fg.link(href=f'{BASE_URL}/rss.xml')
 
-    # 2. Append entries in that exact order (prevents default prepending behavior)
+    # Append in sorted order (prevents default prepending behaviour)
     for entry in sorted_entries:
         fe = fg.add_entry(order='append')
         fe.id(entry['link'])
@@ -87,6 +158,142 @@ def generate_feed(entries):
     fg.atom_file(os.path.join(OUT_PATH, 'rss.xml'))
     print(f"RSS Feed generated with {len(sorted_entries)} items (Newest first).")
 
+# --- Super Productivity Sync ---
+
+def sanitize_title(title):
+    title = re.sub(r'#(\S+)', r'\1', title)
+    title = re.sub(r'  +', ' ', title).strip()
+    return title
+
+def get_tag_name(sender_email):
+    if not sender_email:
+        return None
+    if sender_email in SENDER_TAG_MAP:
+        return SENDER_TAG_MAP[sender_email]
+    for pattern, tag in SENDER_TAG_REGEX_MAP:
+        if re.fullmatch(pattern, sender_email):
+            return tag
+    return None
+
+_sp_project_id = None
+
+def _get_sp_project_id():
+    global _sp_project_id
+    if _sp_project_id is not None:
+        return _sp_project_id
+    try:
+        response = requests.get(f'{SUPER_PRODUCTIVITY_API_URL}/projects', params={'query': SP_PROJECT_NAME})
+        response.raise_for_status()
+        data = response.json()
+        if data.get('ok') and data.get('data'):
+            for project in data['data']:
+                if project['title'] == SP_PROJECT_NAME:
+                    _sp_project_id = project['id']
+                    return _sp_project_id
+    except Exception as e:
+        print(f"Error fetching SP project ID: {e}")
+    return None
+
+def _get_tag_id(tag_name):
+    try:
+        response = requests.get(f'{SUPER_PRODUCTIVITY_API_URL}/tags', params={'query': tag_name})
+        response.raise_for_status()
+        data = response.json()
+        if data.get('ok') and data.get('data'):
+            for tag in data['data']:
+                if tag['title'] == tag_name:
+                    return tag['id']
+        print(f"SP tag '{tag_name}' not found.")
+        return None
+    except Exception as e:
+        print(f"Error fetching SP tag ID: {e}")
+        return None
+
+def _find_sp_task(title, project_id):
+    try:
+        alpha_words = [w for w in title.split() if w.isalpha() and w.isascii() and len(w) > 4]
+        short_query = max(alpha_words, key=len) if alpha_words else None
+        params = {'projectId': project_id, 'source': 'all', 'includeDone': 'true'}
+        if short_query:
+            params['query'] = short_query
+        response = requests.get(f'{SUPER_PRODUCTIVITY_API_URL}/tasks', params=params)
+        response.raise_for_status()
+        data = response.json()
+        if data.get('ok') and data.get('data'):
+            for task in data['data']:
+                if sanitize_title(task['title']) == sanitize_title(title):
+                    return task
+        return None
+    except Exception as e:
+        print(f"Error checking existing SP tasks: {e}")
+        return None
+
+def _add_sp_task(title, project_id, tag_ids=None):
+    try:
+        existing = _find_sp_task(title, project_id)
+        if existing:
+            missing = [t for t in (tag_ids or []) if t not in existing.get('tagIds', [])]
+            if missing:
+                updated_tags = existing.get('tagIds', []) + missing
+                requests.patch(
+                    f'{SUPER_PRODUCTIVITY_API_URL}/tasks/{existing["id"]}',
+                    json={'tagIds': updated_tags},
+                ).raise_for_status()
+                print(f"SP: updated tags for existing task: {title}")
+            else:
+                print(f"SP: task already exists (no tag changes): {title}")
+            return False
+        due_ts = int((time.time() + 60) * 1000)
+        payload = {'title': title, 'projectId': project_id, 'dueWithTime': due_ts, 'remindAt': due_ts, 'dueDay': None}
+        if tag_ids:
+            payload['tagIds'] = tag_ids
+        response = requests.post(f'{SUPER_PRODUCTIVITY_API_URL}/tasks', json=payload)
+        response.raise_for_status()
+        result = response.json()
+        if result.get('ok'):
+            print(f"SP: added task: {title}")
+            return True
+        print(f"SP: failed to add task: {title} — {result.get('error')}")
+        return False
+    except Exception as e:
+        print(f"Error adding SP task: {e}")
+        return False
+
+def sync_entries_to_sp(entries):
+    if not entries:
+        return
+    project_id = _get_sp_project_id()
+    if not project_id:
+        print(f"SP sync: project '{SP_PROJECT_NAME}' not found, skipping.")
+        return
+    for entry in entries:
+        author_email = entry.get('author')
+        author_name = entry.get('author_name')
+        if author_name and '@' in author_name:
+            author_name = None
+        title = entry.get('subject') or entry.get('title')
+        pub_date = None
+        if entry.get('date'):
+            try:
+                pub_date = parse(entry['date']).strftime('%Y-%m-%d')
+            except Exception:
+                pass
+
+        tag_ids = []
+        tag_name = get_tag_name(author_email)
+        if tag_name:
+            tag_id = _get_tag_id(tag_name)
+            if tag_id:
+                tag_ids.append(tag_id)
+
+        display_author = author_name or tag_name
+        parts = ([display_author] if display_author else []) + ([title] if title else [])
+        task_title = ' - '.join(parts)
+        if pub_date:
+            task_title += f' ({pub_date})'
+
+        _add_sp_task(sanitize_title(task_title), project_id, tag_ids)
+
 # --- Core Logic ---
 
 def fetch_web_title(url):
@@ -95,22 +302,18 @@ def fetch_web_title(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
         response = requests.get(url, headers=headers, timeout=10)
-        
         if response.status_code == 200:
             soup = BeautifulSoup(response.content, 'html.parser')
             if soup.title and soup.title.string:
                 return soup.title.string.strip()
     except Exception as e:
         print(f"Warning: Could not fetch title ({e}).")
-    
-    return url  # Fallback to URL if title fetch fails
+    return url
 
 def add_manual_link(url):
     """Adds a custom web link to the feed, automatically parsing the title."""
     last_uid, entries = load_state()
-    
     title = fetch_web_title(url)
-    
     new_entry = {
         'date': datetime.datetime.now(datetime.timezone.utc).isoformat(),
         'title': title,
@@ -118,34 +321,19 @@ def add_manual_link(url):
         'description': f"External Link: {title}",
         'author': 'manual@link'
     }
-    
     entries.append(new_entry)
     save_state(last_uid, entries)
     generate_feed(entries)
+    sync_entries_to_sp([new_entry])
     print(f"Successfully added: {title}")
 
-def fetch_emails():
-    """Connects to IMAP, fetches new emails, and updates the feed."""
-    M = imaplib.IMAP4_SSL(IMAP_HOST)
-
-    try:
-        M.login(EMAIL_ACCOUNT, IMAP_PASSWORD)
-    except imaplib.IMAP4.error:
-        print("LOGIN FAILED!!!")
-        sys.exit(1)
-
-    rv, data = M.select(EMAIL_FOLDER)
-    if rv != 'OK':
-        print("ERROR: Unable to open mailbox ", rv)
-        M.logout()
-        return
-
+def fetch_emails(client):
+    """Fetches new emails and updates the feed."""
+    conn = client.ensure_connected()
     last_uid, existing_entries = load_state()
     print(f"Checking for new emails (Last UID: {last_uid})...")
 
-    rv, data = M.uid('search', None, "ALL")
-    all_uids = data[0].split()
-    current_uids = set(int(u) for u in all_uids)
+    current_uids = set(conn.search(['ALL']))
 
     # Remove entries for emails that no longer have the label
     before = len(existing_entries)
@@ -160,17 +348,16 @@ def fetch_emails():
     current_max_uid = last_uid
 
     if new_uids:
+        fetch_data = conn.fetch(new_uids, ['RFC822'])
         for uid in new_uids:
-            uid_bytes = str(uid).encode()
             current_max_uid = max(current_max_uid, uid)
-            
-            rv, data = M.uid('fetch', uid_bytes, '(RFC822)')
-            if rv != 'OK': continue
+            raw = fetch_data.get(uid, {}).get(b'RFC822')
+            if not raw:
+                continue
 
-            msg = email.message_from_bytes(data[0][1])
+            msg = email.message_from_bytes(raw)
             subject = str(email.header.make_header(email.header.decode_header(msg['Subject'])))
-            
-            # Extract sender email
+
             from_header = msg.get('From')
             name, sender_email = email.utils.parseaddr(from_header)
 
@@ -180,6 +367,7 @@ def fetch_emails():
                     ctype = part.get_content_type()
                     if current_ctype is None or ctype == 'text/html':
                         body = (part.get_payload(decode=True) or b'').decode('utf-8', errors='backslashreplace')
+                        current_ctype = ctype
             else:
                 body = (msg.get_payload(decode=True) or b'').decode('utf-8', errors='backslashreplace')
 
@@ -199,21 +387,18 @@ def fetch_emails():
                 'author': sender_email,
                 'author_name': clean_author_name(name),
             })
-        
+
         print(f"Processed {len(new_entries)} new emails.")
     else:
         print("No new emails.")
-
-
-    M.close()
-    M.logout()
 
     all_entries = existing_entries + new_entries
     print([e['title'] for e in all_entries])
     save_state(current_max_uid, all_entries)
     generate_feed(all_entries)
+    sync_entries_to_sp(new_entries)
 
-def migrate_entries():
+def migrate_entries(client):
     """Backfills author_name and subject for existing entries that lack them."""
     last_uid, entries = load_state()
 
@@ -225,23 +410,17 @@ def migrate_entries():
         print("All entries already have author_name and subject.")
         return
 
-    M = imaplib.IMAP4_SSL(IMAP_HOST)
-    try:
-        M.login(EMAIL_ACCOUNT, IMAP_PASSWORD)
-    except imaplib.IMAP4.error:
-        print("LOGIN FAILED!!!")
-        sys.exit(1)
-
-    M.select(EMAIL_FOLDER)
+    conn = client.ensure_connected()
 
     for entry in needs_update:
         uid = entry['uid']
-        rv, data = M.uid('fetch', str(uid).encode(), '(RFC822.HEADER)')
-        if rv != 'OK':
+        fetch_data = conn.fetch([uid], ['RFC822.HEADER'])
+        raw = fetch_data.get(uid, {}).get(b'RFC822.HEADER')
+        if not raw:
             print(f"Could not fetch UID {uid}")
             continue
 
-        msg = email.message_from_bytes(data[0][1])
+        msg = email.message_from_bytes(raw)
         subject = str(email.header.make_header(email.header.decode_header(msg['Subject'])))
         from_header = msg.get('From')
         name, _ = email.utils.parseaddr(from_header)
@@ -249,9 +428,6 @@ def migrate_entries():
         entry['subject'] = subject
         entry['author_name'] = clean_author_name(name)
         print(f"Updated UID {uid}: author_name={name!r}, subject={subject!r}")
-
-    M.close()
-    M.logout()
 
     save_state(last_uid, entries)
     generate_feed(entries)
@@ -269,7 +445,12 @@ if __name__ == "__main__":
 
     if args.add:
         add_manual_link(args.add)
-    elif args.migrate:
-        migrate_entries()
     else:
-        fetch_emails()
+        with IMAPClient() as client:
+            if args.migrate:
+                migrate_entries(client)
+            else:
+                while True:
+                    fetch_emails(client)
+                    print("Waiting for new mail (IDLE)...")
+                    client.idle_until_change()

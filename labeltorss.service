@@ -1,0 +1,18 @@
+[Unit]
+Description=LabelToRSS — email-to-RSS with IMAP IDLE
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=seppo
+WorkingDirectory=/home/seppo/Documents/labeltorss
+EnvironmentFile=/home/seppo/Documents/labeltorss/.env
+ExecStart=/home/seppo/.local/share/virtualenvs/labeltorss-W9_B0daw/bin/python -u /home/seppo/Documents/labeltorss/main.py
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
