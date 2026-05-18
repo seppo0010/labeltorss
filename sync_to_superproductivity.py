@@ -13,12 +13,16 @@ PROJECT_NAME = 'Newsletters'
 # Email to Tag Mapping
 SENDER_TAG_MAP = {
     'someunpleasant@substack.com': 'Mindel',
-    'causalinf+difference-in-differences@substack.com': 'Cunningham',
     'hola@a1000.ar': 'A1000',
     'noteconomics@substack.com': 'Ajzenman',
     'pricetheory@substack.com': 'Hendrickson',
     'aisnakeoil@substack.com': 'Kapoor and Narayanan'
 }
+
+SENDER_TAG_REGEX_MAP = [
+    (r'causalinf(\+[^@]+)?@substack\.com', 'Cunningham'),
+    (r'.+@cenital\.com', 'Cenital'),
+]
 
 def sanitize_title(title):
     # SP treats #word as an inline tag and strips it from the stored title.
@@ -31,15 +35,14 @@ def get_tag_name(email):
     """Determines the tag name based on the sender email."""
     if not email:
         return None
-    
-    # Check direct mapping
+
     if email in SENDER_TAG_MAP:
         return SENDER_TAG_MAP[email]
-    
-    # Check domain mapping
-    if email.endswith('@cenital.com'):
-        return 'Cenital'
-    
+
+    for pattern, tag in SENDER_TAG_REGEX_MAP:
+        if re.fullmatch(pattern, email):
+            return tag
+
     return None
 
 def get_project_id(project_name):
@@ -80,11 +83,9 @@ def get_tag_id(tag_name):
         print(f"Error fetching tag ID: {e}")
         return None
 
-def task_exists(title, project_id):
-    """Checks if a task with the given title already exists in the project (including archived)."""
+def find_task(title, project_id):
+    """Returns the existing task dict if found, else None."""
     try:
-        # Use a short alphabetic-only filter to avoid URL encoding issues with emoji/special
-        # chars in the full title; exact match on returned results catches the real duplicate.
         alpha_words = [w for w in title.split() if w.isalpha() and w.isascii() and len(w) > 4]
         short_query = max(alpha_words, key=len) if alpha_words else None
 
@@ -97,23 +98,36 @@ def task_exists(title, project_id):
         if data.get('ok') and data.get('data'):
             for task in data['data']:
                 if sanitize_title(task['title']) == sanitize_title(title):
-                    return True
-        return False
+                    return task
+        return None
     except Exception as e:
         print(f"Error checking existing tasks: {e}")
-        return False
+        return None
 
 def add_task(title, project_id, tag_ids=None):
-    """Adds a task to Super Productivity."""
+    """Adds a task to Super Productivity, or updates tags if it already exists."""
     try:
-        if task_exists(title, project_id):
-            print(f"Task already exists: {title}")
+        existing = find_task(title, project_id)
+        if existing:
+            missing = [t for t in (tag_ids or []) if t not in existing.get('tagIds', [])]
+            if missing:
+                updated_tags = existing.get('tagIds', []) + missing
+                response = requests.patch(
+                    f'{SUPER_PRODUCTIVITY_API_URL}/tasks/{existing["id"]}',
+                    json={'tagIds': updated_tags},
+                )
+                response.raise_for_status()
+                print(f"Updated tags for existing task: {title}")
+            else:
+                print(f"Task already exists (no tag changes): {title}")
             return False
 
+        due_ts = int((time.time() + 60) * 1000)
         payload = {
             'title': title,
             'projectId': project_id,
-            'dueWithTime': int((time.time() + 60) * 1000),
+            'dueWithTime': due_ts,
+            'remindAt': due_ts,
             'dueDay': None,
         }
         if tag_ids:
