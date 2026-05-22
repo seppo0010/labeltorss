@@ -7,7 +7,6 @@ import re
 import json
 import argparse
 import datetime
-import time
 from unidecode import unidecode
 import unicodedata
 from dateutil.parser import parse
@@ -243,8 +242,7 @@ def _add_sp_task(title, project_id, tag_ids=None):
             else:
                 print(f"SP: task already exists (no tag changes): {title}")
             return False
-        due_ts = int((time.time() + 60) * 1000)
-        payload = {'title': title, 'projectId': project_id, 'dueWithTime': due_ts, 'remindAt': due_ts, 'dueDay': None}
+        payload = {'title': title, 'projectId': project_id, 'dueDay': datetime.date.today().isoformat()}
         if tag_ids:
             payload['tagIds'] = tag_ids
         response = requests.post(f'{SUPER_PRODUCTIVITY_API_URL}/tasks', json=payload)
