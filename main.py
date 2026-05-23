@@ -75,7 +75,7 @@ class IMAPClient:
             responses = conn.idle_check(timeout=timeout)
             conn.idle_done()
             return any(
-                isinstance(r, tuple) and len(r) > 1 and r[1] in (b'EXISTS', b'RECENT')
+                isinstance(r, tuple) and len(r) > 1 and r[1] in (b'EXISTS', b'RECENT', b'EXPUNGE')
                 for r in responses
             )
         except Exception as e:
