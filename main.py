@@ -329,7 +329,6 @@ def fetch_emails(client):
     """Fetches new emails and updates the feed."""
     conn = client.ensure_connected()
     last_uid, existing_entries = load_state()
-    print(f"Checking for new emails (Last UID: {last_uid})...")
 
     current_uids = set(conn.search(['ALL']))
 
@@ -340,15 +339,16 @@ def fetch_emails(client):
     if removed:
         print(f"Removed {removed} entries no longer in folder.")
 
-    new_uids = sorted(uid for uid in current_uids if uid > last_uid)
+    known_uids = {e['uid'] for e in existing_entries if 'uid' in e}
+    new_uids = sorted(uid for uid in current_uids if uid not in known_uids)
+    print(f"Checking for new emails (known: {len(known_uids)}, in folder: {len(current_uids)}, new: {len(new_uids)})...")
 
     new_entries = []
-    current_max_uid = last_uid
+    current_max_uid = max(current_uids) if current_uids else last_uid
 
     if new_uids:
         fetch_data = conn.fetch(new_uids, ['RFC822'])
         for uid in new_uids:
-            current_max_uid = max(current_max_uid, uid)
             raw = fetch_data.get(uid, {}).get(b'RFC822')
             if not raw:
                 continue
