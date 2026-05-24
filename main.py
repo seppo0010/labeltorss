@@ -67,7 +67,7 @@ class IMAPClient:
         self._conn = conn
         return conn
 
-    def idle_until_change(self, timeout=25 * 60):
+    def idle_until_change(self, timeout=5 * 60):
         """Block in IDLE until EXISTS/RECENT or timeout. Returns True if new mail signaled."""
         conn = self.ensure_connected()
         try:
