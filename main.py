@@ -294,6 +294,15 @@ def sync_entries_to_sp(entries):
 
 # --- Core Logic ---
 
+def strip_icon_images(html):
+    """Remove decorative icon <img> tags (e.g. Substack UI icons) that tend to return 404."""
+    soup = BeautifulSoup(html, 'html.parser')
+    for img in soup.find_all('img'):
+        src = img.get('src', '')
+        if '%2Ficon%2F' in src or '/icon/' in src:
+            img.decompose()
+    return str(soup)
+
 def fetch_web_title(url):
     """Fetches the <title> tag from a URL."""
     print(f"Fetching title for: {url}...")
@@ -368,6 +377,8 @@ def fetch_emails(client):
                         current_ctype = ctype
             else:
                 body = (msg.get_payload(decode=True) or b'').decode('utf-8', errors='backslashreplace')
+
+            body = strip_icon_images(body)
 
             id_ = re.sub('[^0-9a-zA-Z]+', '_', unidecode(subject))
             file_name = f'{id_}.html'
