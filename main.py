@@ -146,7 +146,7 @@ def generate_feed(entries):
     for entry in sorted_entries:
         fe = fg.add_entry(order='append')
         fe.id(entry['link'])
-        fe.title(entry.get('subject', entry['title']))
+        fe.title(entry.get('subject') or entry.get('title') or '(sin asunto)')
         fe.updated(parse(entry['date']))
         fe.link(href=entry['link'], rel='self')
         fe.description(entry.get('description', ''))
@@ -241,7 +241,7 @@ def _add_sp_task(title, project_id, tag_ids=None):
                 print(f"SP: updated tags for existing task: {title}")
             else:
                 print(f"SP: task already exists (no tag changes): {title}")
-            return False
+            return True
         payload = {'title': title, 'projectId': project_id, 'dueDay': datetime.date.today().isoformat()}
         if tag_ids:
             payload['tagIds'] = tag_ids
@@ -258,13 +258,14 @@ def _add_sp_task(title, project_id, tag_ids=None):
         return False
 
 def sync_entries_to_sp(entries):
-    if not entries:
+    pending = [e for e in entries if not e.get('sp_synced')]
+    if not pending:
         return
     project_id = _get_sp_project_id()
     if not project_id:
         print(f"SP sync: project '{SP_PROJECT_NAME}' not found, skipping.")
         return
-    for entry in entries:
+    for entry in pending:
         author_email = entry.get('author')
         author_name = entry.get('author_name')
         if author_name and '@' in author_name:
@@ -290,7 +291,7 @@ def sync_entries_to_sp(entries):
         if pub_date:
             task_title += f' ({pub_date})'
 
-        _add_sp_task(sanitize_title(task_title), project_id, tag_ids)
+        entry['sp_synced'] = _add_sp_task(sanitize_title(task_title), project_id, tag_ids)
 
 # --- Core Logic ---
 
@@ -329,9 +330,9 @@ def add_manual_link(url):
         'author': 'manual@link'
     }
     entries.append(new_entry)
-    save_state(last_uid, entries)
     generate_feed(entries)
-    sync_entries_to_sp([new_entry])
+    sync_entries_to_sp(entries)
+    save_state(last_uid, entries)
     print(f"Successfully added: {title}")
 
 def fetch_emails(client):
@@ -363,7 +364,7 @@ def fetch_emails(client):
                 continue
 
             msg = email.message_from_bytes(raw)
-            subject = str(email.header.make_header(email.header.decode_header(msg['Subject'])))
+            subject = str(email.header.make_header(email.header.decode_header(msg['Subject'] or '')))
 
             from_header = msg.get('From')
             name, sender_email = email.utils.parseaddr(from_header)
@@ -380,7 +381,7 @@ def fetch_emails(client):
 
             body = strip_icon_images(body)
 
-            id_ = re.sub('[^0-9a-zA-Z]+', '_', unidecode(subject))
+            id_ = re.sub('[^0-9a-zA-Z]+', '_', unidecode(subject)).strip('_') or f'email_{uid}'
             file_name = f'{id_}.html'
             with open(os.path.join(OUT_PATH, file_name), 'w') as fp:
                 fp.write(body)
@@ -390,7 +391,7 @@ def fetch_emails(client):
                 'uid': uid,
                 'date': date_obj.isoformat(),
                 'title': id_,
-                'subject': subject,
+                'subject': subject or '(sin asunto)',
                 'link': f'{BASE_URL}/{file_name}',
                 'description': remove_control_characters(body.strip()),
                 'author': sender_email,
@@ -403,9 +404,9 @@ def fetch_emails(client):
 
     all_entries = existing_entries + new_entries
     print([e['title'] for e in all_entries])
-    save_state(current_max_uid, all_entries)
     generate_feed(all_entries)
-    sync_entries_to_sp(new_entries)
+    sync_entries_to_sp(all_entries)
+    save_state(current_max_uid, all_entries)
 
 def migrate_entries(client):
     """Backfills author_name and subject for existing entries that lack them."""
