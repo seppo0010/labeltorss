@@ -242,7 +242,13 @@ def _add_sp_task(title, project_id, tag_ids=None):
             else:
                 print(f"SP: task already exists (no tag changes): {title}")
             return True
-        payload = {'title': title, 'projectId': project_id, 'dueDay': datetime.date.today().isoformat()}
+        now = datetime.datetime.now()
+        payload = {
+            'title': title,
+            'projectId': project_id,
+            'dueWithTime': int(now.timestamp() * 1000),
+            'hasPlannedTime': True,
+        }
         if tag_ids:
             payload['tagIds'] = tag_ids
         response = requests.post(f'{SUPER_PRODUCTIVITY_API_URL}/tasks', json=payload)
