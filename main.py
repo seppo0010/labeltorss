@@ -24,8 +24,9 @@ OUT_PATH = os.getenv('OUT_PATH')
 BASE_URL = os.getenv('BASE_URL')
 STATE_FILE = os.path.join(OUT_PATH, 'metadata.json')
 
-SUPER_PRODUCTIVITY_API_URL = 'http://127.0.0.1:3876'
-SP_PROJECT_NAME = 'Newsletters'
+VIKUNJA_API_URL = os.getenv('VIKUNJA_API_URL')
+VIKUNJA_API_TOKEN = os.getenv('VIKUNJA_API_TOKEN')
+VIKUNJA_PROJECT_NAME = 'Newsletters'
 
 SENDER_TAG_MAP = {
     'someunpleasant@substack.com': 'Mindel',
@@ -157,7 +158,7 @@ def generate_feed(entries):
     fg.atom_file(os.path.join(OUT_PATH, 'rss.xml'))
     print(f"RSS Feed generated with {len(sorted_entries)} items (Newest first).")
 
-# --- Super Productivity Sync ---
+# --- Vikunja Sync ---
 
 def sanitize_title(title):
     title = re.sub(r'#(\S+)', r'\1', title)
@@ -174,102 +175,114 @@ def get_tag_name(sender_email):
             return tag
     return None
 
-_sp_project_id = None
+def _vikunja_headers():
+    return {'Authorization': f'Bearer {VIKUNJA_API_TOKEN}'}
 
-def _get_sp_project_id():
-    global _sp_project_id
-    if _sp_project_id is not None:
-        return _sp_project_id
+_vikunja_project_id = None
+
+def _get_vikunja_project_id():
+    global _vikunja_project_id
+    if _vikunja_project_id is not None:
+        return _vikunja_project_id
     try:
-        response = requests.get(f'{SUPER_PRODUCTIVITY_API_URL}/projects', params={'query': SP_PROJECT_NAME})
+        response = requests.get(
+            f'{VIKUNJA_API_URL}/projects',
+            headers=_vikunja_headers(),
+            params={'s': VIKUNJA_PROJECT_NAME},
+        )
         response.raise_for_status()
-        data = response.json()
-        if data.get('ok') and data.get('data'):
-            for project in data['data']:
-                if project['title'] == SP_PROJECT_NAME:
-                    _sp_project_id = project['id']
-                    return _sp_project_id
+        for project in response.json():
+            if project['title'] == VIKUNJA_PROJECT_NAME:
+                _vikunja_project_id = project['id']
+                return _vikunja_project_id
     except Exception as e:
-        print(f"Error fetching SP project ID: {e}")
+        print(f"Error fetching Vikunja project ID: {e}")
     return None
 
-def _get_tag_id(tag_name):
+def _get_label_id(label_name):
     try:
-        response = requests.get(f'{SUPER_PRODUCTIVITY_API_URL}/tags', params={'query': tag_name})
+        response = requests.get(
+            f'{VIKUNJA_API_URL}/labels',
+            headers=_vikunja_headers(),
+            params={'s': label_name},
+        )
         response.raise_for_status()
-        data = response.json()
-        if data.get('ok') and data.get('data'):
-            for tag in data['data']:
-                if tag['title'] == tag_name:
-                    return tag['id']
-        print(f"SP tag '{tag_name}' not found.")
+        for label in response.json():
+            if label['title'] == label_name:
+                return label['id']
+        print(f"Vikunja label '{label_name}' not found.")
         return None
     except Exception as e:
-        print(f"Error fetching SP tag ID: {e}")
+        print(f"Error fetching Vikunja label ID: {e}")
         return None
 
-def _find_sp_task(title, project_id):
+def _find_vikunja_task(title, project_id):
     try:
         alpha_words = [w for w in title.split() if w.isalpha() and w.isascii() and len(w) > 4]
         short_query = max(alpha_words, key=len) if alpha_words else None
-        params = {'projectId': project_id, 'source': 'all', 'includeDone': 'true'}
-        if short_query:
-            params['query'] = short_query
-        response = requests.get(f'{SUPER_PRODUCTIVITY_API_URL}/tasks', params=params)
+        params = {'s': short_query} if short_query else {}
+        response = requests.get(
+            f'{VIKUNJA_API_URL}/projects/{project_id}/tasks',
+            headers=_vikunja_headers(),
+            params=params,
+        )
         response.raise_for_status()
-        data = response.json()
-        if data.get('ok') and data.get('data'):
-            for task in data['data']:
-                if sanitize_title(task['title']) == sanitize_title(title):
-                    return task
+        for task in response.json():
+            if sanitize_title(task['title']) == sanitize_title(title):
+                return task
         return None
     except Exception as e:
-        print(f"Error checking existing SP tasks: {e}")
+        print(f"Error checking existing Vikunja tasks: {e}")
         return None
 
-def _add_sp_task(title, project_id, tag_ids=None):
+def _add_vikunja_task(title, project_id, label_ids=None):
     try:
-        existing = _find_sp_task(title, project_id)
+        existing = _find_vikunja_task(title, project_id)
         if existing:
-            missing = [t for t in (tag_ids or []) if t not in existing.get('tagIds', [])]
-            if missing:
-                updated_tags = existing.get('tagIds', []) + missing
-                requests.patch(
-                    f'{SUPER_PRODUCTIVITY_API_URL}/tasks/{existing["id"]}',
-                    json={'tagIds': updated_tags},
+            existing_label_ids = {l['id'] for l in (existing.get('labels') or [])}
+            missing = [l for l in (label_ids or []) if l not in existing_label_ids]
+            for label_id in missing:
+                requests.put(
+                    f'{VIKUNJA_API_URL}/tasks/{existing["id"]}/labels',
+                    headers=_vikunja_headers(),
+                    json={'label_id': label_id},
                 ).raise_for_status()
-                print(f"SP: updated tags for existing task: {title}")
+            if missing:
+                print(f"Vikunja: updated labels for existing task: {title}")
             else:
-                print(f"SP: task already exists (no tag changes): {title}")
+                print(f"Vikunja: task already exists (no label changes): {title}")
             return True
-        now = datetime.datetime.now()
+        now = datetime.datetime.now(datetime.timezone.utc)
         payload = {
             'title': title,
-            'projectId': project_id,
-            'dueWithTime': int(now.timestamp() * 1000),
-            'hasPlannedTime': True,
+            'due_date': now.isoformat(),
         }
-        if tag_ids:
-            payload['tagIds'] = tag_ids
-        response = requests.post(f'{SUPER_PRODUCTIVITY_API_URL}/tasks', json=payload)
+        response = requests.put(
+            f'{VIKUNJA_API_URL}/projects/{project_id}/tasks',
+            headers=_vikunja_headers(),
+            json=payload,
+        )
         response.raise_for_status()
-        result = response.json()
-        if result.get('ok'):
-            print(f"SP: added task: {title}")
-            return True
-        print(f"SP: failed to add task: {title} — {result.get('error')}")
-        return False
+        task = response.json()
+        for label_id in (label_ids or []):
+            requests.put(
+                f'{VIKUNJA_API_URL}/tasks/{task["id"]}/labels',
+                headers=_vikunja_headers(),
+                json={'label_id': label_id},
+            ).raise_for_status()
+        print(f"Vikunja: added task: {title}")
+        return True
     except Exception as e:
-        print(f"Error adding SP task: {e}")
+        print(f"Error adding Vikunja task: {e}")
         return False
 
-def sync_entries_to_sp(entries):
-    pending = [e for e in entries if not e.get('sp_synced')]
+def sync_entries_to_vikunja(entries):
+    pending = [e for e in entries if not e.get('vikunja_synced')]
     if not pending:
         return
-    project_id = _get_sp_project_id()
+    project_id = _get_vikunja_project_id()
     if not project_id:
-        print(f"SP sync: project '{SP_PROJECT_NAME}' not found, skipping.")
+        print(f"Vikunja sync: project '{VIKUNJA_PROJECT_NAME}' not found, skipping.")
         return
     for entry in pending:
         author_email = entry.get('author')
@@ -284,12 +297,12 @@ def sync_entries_to_sp(entries):
             except Exception:
                 pass
 
-        tag_ids = []
+        label_ids = []
         tag_name = get_tag_name(author_email)
         if tag_name:
-            tag_id = _get_tag_id(tag_name)
-            if tag_id:
-                tag_ids.append(tag_id)
+            label_id = _get_label_id(tag_name)
+            if label_id:
+                label_ids.append(label_id)
 
         display_author = author_name or tag_name
         parts = ([display_author] if display_author else []) + ([title] if title else [])
@@ -297,7 +310,7 @@ def sync_entries_to_sp(entries):
         if pub_date:
             task_title += f' ({pub_date})'
 
-        entry['sp_synced'] = _add_sp_task(sanitize_title(task_title), project_id, tag_ids)
+        entry['vikunja_synced'] = _add_vikunja_task(sanitize_title(task_title), project_id, label_ids)
 
 # --- Core Logic ---
 
@@ -337,7 +350,7 @@ def add_manual_link(url):
     }
     entries.append(new_entry)
     generate_feed(entries)
-    sync_entries_to_sp(entries)
+    sync_entries_to_vikunja(entries)
     save_state(last_uid, entries)
     print(f"Successfully added: {title}")
 
@@ -411,7 +424,7 @@ def fetch_emails(client):
     all_entries = existing_entries + new_entries
     print([e['title'] for e in all_entries])
     generate_feed(all_entries)
-    sync_entries_to_sp(all_entries)
+    sync_entries_to_vikunja(all_entries)
     save_state(current_max_uid, all_entries)
 
 def migrate_entries(client):
