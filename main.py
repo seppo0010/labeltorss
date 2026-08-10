@@ -26,7 +26,7 @@ STATE_FILE = os.path.join(OUT_PATH, 'metadata.json')
 
 VIKUNJA_API_URL = os.getenv('VIKUNJA_API_URL')
 VIKUNJA_API_TOKEN = os.getenv('VIKUNJA_API_TOKEN')
-VIKUNJA_PROJECT_NAME = 'Newsletters'
+VIKUNJA_PROJECT_NAME = '📩Newsletters'
 
 SENDER_TAG_MAP = {
     'someunpleasant@substack.com': 'Mindel',
