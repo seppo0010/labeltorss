@@ -252,10 +252,10 @@ def _add_vikunja_task(title, project_id, label_ids=None):
             else:
                 print(f"Vikunja: task already exists (no label changes): {title}")
             return True
-        now = datetime.datetime.now(datetime.timezone.utc)
+        due_date = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=1)
         payload = {
             'title': title,
-            'due_date': now.isoformat(),
+            'due_date': due_date.isoformat(),
         }
         response = requests.put(
             f'{VIKUNJA_API_URL}/projects/{project_id}/tasks',
