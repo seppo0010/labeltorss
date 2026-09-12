@@ -323,13 +323,6 @@ def sweep_stale_placeholders(project_id):
 
 def _add_vikunja_task(title, project_id, label_ids=None, display_author=None):
     try:
-        placeholder = _find_pending_placeholder(project_id, display_author)
-        if placeholder:
-            try:
-                _update_task_full(placeholder['id'], {'done': True})
-                print(f"Vikunja: advanced recurring placeholder for: {display_author}")
-            except Exception as e:
-                print(f"Error advancing newsletter placeholder for {display_author}: {e}")
         existing = _find_vikunja_task(title, project_id)
         if existing:
             existing_label_ids = {l['id'] for l in (existing.get('labels') or [])}
@@ -345,6 +338,17 @@ def _add_vikunja_task(title, project_id, label_ids=None, display_author=None):
             else:
                 print(f"Vikunja: task already exists (no label changes): {title}")
             return True
+        # Only advance the recurring placeholder once we know this is genuinely a new
+        # task about to be created - not for a re-labeled/duplicate old issue (which
+        # would otherwise fall into the `existing` branch above but still wrongly eat
+        # a placeholder occurrence if checked first).
+        placeholder = _find_pending_placeholder(project_id, display_author)
+        if placeholder:
+            try:
+                _update_task_full(placeholder['id'], {'done': True})
+                print(f"Vikunja: advanced recurring placeholder for: {display_author}")
+            except Exception as e:
+                print(f"Error advancing newsletter placeholder for {display_author}: {e}")
         due_date = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=1)
         payload = {
             'title': title,
