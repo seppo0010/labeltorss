@@ -165,6 +165,10 @@ def sanitize_title(title):
     title = re.sub(r'  +', ' ', title).strip()
     return title
 
+_ESTIMATE_PREFIX_RE = re.compile(r'^\[[^\]]*\]\s*')
+NEWSLETTER_PLACEHOLDER_SUFFIX = ' (esperado)'
+NEWSLETTER_STALE_DAYS = int(os.getenv('NEWSLETTER_STALE_DAYS', '3'))
+
 def get_tag_name(sender_email):
     if not sender_email:
         return None
@@ -235,8 +239,97 @@ def _find_vikunja_task(title, project_id):
         print(f"Error checking existing Vikunja tasks: {e}")
         return None
 
-def _add_vikunja_task(title, project_id, label_ids=None):
+def _get_vikunja_task(task_id):
+    response = requests.get(f'{VIKUNJA_API_URL}/tasks/{task_id}', headers=_vikunja_headers())
+    response.raise_for_status()
+    return response.json()
+
+def _update_task_full(task_id, changes):
+    """Fetch-merge-write: Vikunja resets any field omitted from a task update body,
+    so this round-trips the full task (GET) merged with `changes` (POST), instead of
+    sending `changes` alone - otherwise fields like repeat_after/repeat_mode would be
+    wiped out."""
+    task = _get_vikunja_task(task_id)
+    task.update(changes)
+    response = requests.post(f'{VIKUNJA_API_URL}/tasks/{task_id}', headers=_vikunja_headers(), json=task)
+    response.raise_for_status()
+    return response.json()
+
+def _find_pending_placeholder(project_id, display_author):
+    """Finds an open recurring newsletter placeholder task (title ending in
+    NEWSLETTER_PLACEHOLDER_SUFFIX) for this specific author/columnist. Matches on the
+    author name embedded in the title, not on Vikunja labels - senders like Cenital
+    reuse the same label across many different unrelated columnists, so a label match
+    would advance the wrong newsletter's placeholder."""
+    if not display_author:
+        return None
     try:
+        response = requests.get(
+            f'{VIKUNJA_API_URL}/projects/{project_id}/tasks',
+            headers=_vikunja_headers(),
+            params={'s': display_author, 'filter': 'done = false'},
+        )
+        response.raise_for_status()
+        candidates = []
+        for task in response.json():
+            title = task.get('title', '')
+            if not title.endswith(NEWSLETTER_PLACEHOLDER_SUFFIX):
+                continue
+            body = _ESTIMATE_PREFIX_RE.sub('', title[:-len(NEWSLETTER_PLACEHOLDER_SUFFIX)]).strip()
+            if body == display_author:
+                candidates.append(task)
+        if not candidates:
+            return None
+        candidates.sort(key=lambda t: t.get('due_date') or '')
+        return candidates[0]
+    except Exception as e:
+        print(f"Error finding pending newsletter placeholder: {e}")
+        return None
+
+def sweep_stale_placeholders(project_id):
+    """Marks recurring newsletter placeholders done if their expected due_date is more
+    than NEWSLETTER_STALE_DAYS in the past (e.g. an issue got skipped that week) - marks
+    done rather than deleting, so Vikunja's repeat_after/repeat_mode advances the same
+    recurring task to its next occurrence instead of losing the recurrence entirely."""
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=NEWSLETTER_STALE_DAYS)
+    try:
+        response = requests.get(
+            f'{VIKUNJA_API_URL}/projects/{project_id}/tasks',
+            headers=_vikunja_headers(),
+            params={'filter': 'done = false'},
+        )
+        response.raise_for_status()
+        tasks = response.json()
+    except Exception as e:
+        print(f"Error listing tasks for stale-placeholder sweep: {e}")
+        return
+    for task in tasks:
+        title = task.get('title', '')
+        if not title.endswith(NEWSLETTER_PLACEHOLDER_SUFFIX):
+            continue
+        due = task.get('due_date')
+        if not due:
+            continue
+        try:
+            due_dt = parse(due)
+        except Exception:
+            continue
+        if due_dt < cutoff:
+            try:
+                _update_task_full(task['id'], {'done': True})
+                print(f"Vikunja: auto-dismissed stale placeholder: {title}")
+            except Exception as e:
+                print(f"Error dismissing stale placeholder {title}: {e}")
+
+def _add_vikunja_task(title, project_id, label_ids=None, display_author=None):
+    try:
+        placeholder = _find_pending_placeholder(project_id, display_author)
+        if placeholder:
+            try:
+                _update_task_full(placeholder['id'], {'done': True})
+                print(f"Vikunja: advanced recurring placeholder for: {display_author}")
+            except Exception as e:
+                print(f"Error advancing newsletter placeholder for {display_author}: {e}")
         existing = _find_vikunja_task(title, project_id)
         if existing:
             existing_label_ids = {l['id'] for l in (existing.get('labels') or [])}
@@ -310,7 +403,7 @@ def sync_entries_to_vikunja(entries):
         if pub_date:
             task_title += f' ({pub_date})'
 
-        entry['vikunja_synced'] = _add_vikunja_task(sanitize_title(task_title), project_id, label_ids)
+        entry['vikunja_synced'] = _add_vikunja_task(sanitize_title(task_title), project_id, label_ids, display_author=display_author)
 
 # --- Core Logic ---
 
@@ -356,6 +449,10 @@ def add_manual_link(url):
 
 def fetch_emails(client):
     """Fetches new emails and updates the feed."""
+    project_id = _get_vikunja_project_id()
+    if project_id:
+        sweep_stale_placeholders(project_id)
+
     conn = client.ensure_connected()
     last_uid, existing_entries = load_state()
 
