@@ -349,6 +349,9 @@ def _add_vikunja_task(title, project_id, label_ids=None, display_author=None):
                 print(f"Vikunja: advanced recurring placeholder for: {display_author}")
             except Exception as e:
                 print(f"Error advancing newsletter placeholder for {display_author}: {e}")
+            estimate_match = _ESTIMATE_PREFIX_RE.match(placeholder.get('title', ''))
+            if estimate_match and not _ESTIMATE_PREFIX_RE.match(title):
+                title = estimate_match.group(0) + title
         due_date = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=1)
         payload = {
             'title': title,
